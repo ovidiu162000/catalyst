@@ -5,7 +5,9 @@ from redo import retry
 
 from catalyst.assets._assets import TradingPair
 from catalyst.constants import LOG_LEVEL
-from catalyst.exchange.exchange_errors import ExchangeRequestError
+from catalyst.exchange.exchange_errors import (
+    ExchangeRequestError, NoValueForField
+)
 from catalyst.finance.blotter import Blotter
 from catalyst.finance.commission import CommissionModel
 from catalyst.finance.order import ORDER_STATUS
@@ -96,7 +98,10 @@ class TradingPairFixedSlippage(SlippageModel):
 
     def simulate(self, data, asset, orders_for_asset):
         self._volume_for_bar = 0
-        price = data.current(asset, 'close')
+        try:
+            price = data.current(asset, 'open')
+        except NoValueForField:
+            price = data.current(asset, 'close')
 
         dt = data.current_dt
         for order in orders_for_asset:
@@ -121,7 +126,10 @@ class TradingPairFixedSlippage(SlippageModel):
                 yield order, transaction
 
     def process_order(self, data, order):
-        price = data.current(order.asset, 'close')
+        try:
+            price = data.current(order.asset, 'open')
+        except NoValueForField:
+            price = data.current(order.asset, 'close')
 
         if order.amount > 0:
             # Buy order
