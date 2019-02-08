@@ -108,6 +108,13 @@ class TradingPairFixedSlippage(SlippageModel):
             if order.open_amount == 0:
                 continue
 
+            if order.limit is not None:
+                try:
+                    price = data.current(asset, 'low')
+                except NoValueForField:
+                    log.info('No low for candle in limit order')
+
+
             order.check_triggers(price, dt)
             if not order.triggered:
                 log.info(
