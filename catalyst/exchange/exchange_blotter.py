@@ -134,7 +134,11 @@ class TradingPairFixedSlippage(SlippageModel):
 
     def process_order(self, data, order):
         try:
-            price = data.current(order.asset, 'open')
+            if order.limit is None:
+                price = data.current(order.asset, 'open')
+            else:
+                price = order.limit
+
         except NoValueForField:
             price = data.current(order.asset, 'close')
 
