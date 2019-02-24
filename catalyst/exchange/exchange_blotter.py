@@ -110,9 +110,12 @@ class TradingPairFixedSlippage(SlippageModel):
 
             if order.limit is not None:
                 try:
-                    price = data.current(asset, 'low')
+                    if order.amount >= 0:
+                        price = data.current(asset, 'low')
+                    else:
+                        price = data.current(asset, 'high')
                 except NoValueForField:
-                    log.info('No low for candle in limit order')
+                    log.error('No value for testing limit order')
 
 
             order.check_triggers(price, dt)
@@ -137,7 +140,10 @@ class TradingPairFixedSlippage(SlippageModel):
             if order.limit is None:
                 price = data.current(order.asset, 'open')
             else:
-                price = order.limit
+                if order.amount >= 0:
+                    price = min(order.limit, data.current(order.asset, 'open'))
+                else:
+                    price = max(order.limit, data.current(order.asset, 'open'))
 
         except NoValueForField:
             price = data.current(order.asset, 'close')
