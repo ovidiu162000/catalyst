@@ -1461,6 +1461,16 @@ class TradingAlgorithm(object):
         if not self._can_order_asset(asset):
             return None
 
+        current_position = 0.0
+
+        if asset in self._portfolio.positions:
+            current_position = self._portfolio.positions[asset].amount
+
+        if amount + current_position < 0.0:
+            log.error('Insufficient position amount for asset: ')
+            log.error(str(asset))
+            return None
+
         amount, style = self._calculate_order(asset, amount,
                                               limit_price, stop_price, style)
         return self.blotter.order(asset, amount, style)
