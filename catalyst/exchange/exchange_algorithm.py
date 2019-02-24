@@ -193,7 +193,7 @@ class ExchangeTradingAlgorithmBase(TradingAlgorithm):
         """
         if asset in self.blotter.open_orders:
             for open_order in self.blotter.open_orders[asset]:
-                current_amount = open_order.amount
+                current_amount = open_order.filled
                 target -= current_amount
 
         target = super(ExchangeTradingAlgorithmBase, self). \
