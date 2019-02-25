@@ -1463,8 +1463,8 @@ class TradingAlgorithm(object):
 
         current_position = 0.0
 
-        if asset in self._portfolio.positions:
-            current_position = self._portfolio.positions[asset].amount
+        if asset in self.portfolio.positions:
+            current_position = self.portfolio.positions[asset].amount
 
         if amount + current_position < 0.0:
             log.error('Insufficient position amount for asset: ')
