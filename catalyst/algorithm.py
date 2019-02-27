@@ -2024,6 +2024,16 @@ class TradingAlgorithm(object):
         if not self._can_order_asset(asset):
             return None
 
+        if limit_price is not None:
+            log.error('Limit price is not supported for order_target_percent')
+            return None
+
+        if target < 0.0 or 1.0 < target:
+            log.error('Target for order_target_percent has to be between 0.0' \
+                    + ' and 1.0')
+            return None
+
+
         amount = self._calculate_order_target_percent_amount(asset, target)
         return self.order(asset, amount,
                           limit_price=limit_price,
