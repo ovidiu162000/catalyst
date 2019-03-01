@@ -1149,7 +1149,7 @@ class ExchangeTradingAlgorithmLive(ExchangeTradingAlgorithmBase):
                 retry_exceptions=(ExchangeRequestError,),
                 cleanup=lambda:
                 log.warn('attempting to cancel the order again'),
-                args=(order_id, symbol, params)
+                args=(order_param, symbol, params)
             )
             self.blotter.cancel(order_id)
         else:

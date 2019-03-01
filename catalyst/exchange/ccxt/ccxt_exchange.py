@@ -1212,8 +1212,12 @@ class CCXT(Exchange):
                 'on some exchanges.'
             )
         try:
-            symbol = self.get_symbol(asset_or_symbol) \
-                if asset_or_symbol is not None else None
+            if isinstance(order_param, Order):
+                symbol = self.get_symbol(order_param.sid)
+            else:
+                symbol = self.get_symbol(asset_or_symbol) \
+                    if asset_or_symbol is not None else None
+
             self.api.cancel_order(id=order_id,
                                   symbol=symbol, params=params)
 
