@@ -195,22 +195,24 @@ def prepare_stats(stats, recorded_cols=list()):
         asset_values = dict()
         if recorded_cols is not None:
             for column in recorded_cols[:]:
-                value = row_data[column]
-                if isinstance(value, pd.Series):
-                    value = value.to_dict()
 
-                if type(value) is dict:
-                    for asset in value:
-                        if not isinstance(asset, TradingPair):
-                            break
+                if column in row_data:
+                    value = row_data[column]
+                    if isinstance(value, pd.Series):
+                        value = value.to_dict()
 
-                        if asset not in assets:
-                            assets.append(asset)
+                    if type(value) is dict:
+                        for asset in value:
+                            if not isinstance(asset, TradingPair):
+                                break
 
-                        if asset not in asset_values:
-                            asset_values[asset] = dict()
+                            if asset not in assets:
+                                assets.append(asset)
 
-                        asset_values[asset][column] = value[asset]
+                            if asset not in asset_values:
+                                asset_values[asset] = dict()
+
+                            asset_values[asset][column] = value[asset]
 
         if len(assets) == 1:
             row = stats[row_index]
