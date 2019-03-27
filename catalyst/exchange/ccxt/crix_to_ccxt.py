@@ -4,8 +4,10 @@ from datetime import datetime
 from decimal import Decimal
 
 import ccxt
+# from ccxt.base.decimal_to_precision import decimal_to_precision
+# from ccxt.base.decimal_to_precision import DECIMAL_PLACES, TRUNCATE, ROUND
 import crix
-from crix.models import Ticker, Resolution, NewOrder, Order, Symbol, Depth, Trade, Account, Ticker24, TimeInForce
+from crix.models import Resolution, NewOrder
 from logbook import Logger
 #from catalyst.constants import LOG_LEVEL
 import requests
@@ -30,14 +32,25 @@ class CrixClient(object):
             self._base_url = 'https://{}.crix.io'.format(self.env)
         self._base_url += '/api/v1'
         
-        self.client      = crix.Client(env='mvp')
+        self.client = crix.Client(env='mvp')
         self.key = api_key
         self.secret = api_secret
         self.auth_client = crix.AuthorizedClient(api_key, api_secret)
 
+        #self.precisionMode = DECIMAL_PLACES
+        self.substituteCommonCurrencyCodes = True
+        self.commonCurrencies = {
+            'XBT'   : 'BTC',
+            'BCC'   : 'BCH',
+            'DRK'   : 'DASH',
+            'BCHABC': 'BCH',
+            'BCHSV' : 'BSV',
+        }
+
         self.name = 'Crix'
         self.markets = None
         self.tickers = None
+        self.orders = {}
         self.timeframes = {
             '1m' : Resolution.one_minute,
             '5m' : Resolution.five_minutes,
@@ -48,6 +61,33 @@ class CrixClient(object):
             '4h' : Resolution.four_hours,
             '1d' : Resolution.day
         }
+
+        self.has = {
+            'CORS'                : False,
+            'publicAPI'           : True,
+            'privateAPI'          : True,
+            'cancelOrder'         : True,
+            'createDepositAddress': False,
+            'createOrder'         : True,
+            'deposit'             : False,
+            'fetchBalance'        : True,
+            'fetchClosedOrders'   : True,
+            'fetchCurrencies'     : False,
+            'fetchDepositAddress' : False,
+            'fetchMarkets'        : True,
+            'fetchMyTrades'       : True,
+            'fetchOHLCV'          : True,
+            'fetchOpenOrders'     : True,
+            'fetchOrder'          : True,
+            'fetchOrderBook'      : True,
+            'fetchOrders'         : True,
+            'fetchTicker'         : True,
+            'fetchTickers'        : True,
+            'fetchBidsAsks'       : False,
+            'fetchTrades'         : False,
+            'withdraw'            : False,
+        }
+
 
     ############# Public methods
     def throttle(self):
@@ -89,8 +129,8 @@ class CrixClient(object):
                     'max': float(item.max_price)
                 }
             }
-            maker = item.maker_fee
-            taker = item.taker_fee
+            maker = float(item.maker_fee)
+            taker = float(item.taker_fee)
 
             markets[symbol] = {
                 'id': id,
@@ -115,7 +155,7 @@ class CrixClient(object):
         if self.markets:
             ret = self.to_array(self.markets)
         else:
-            ret = self.to_arrya(self.load_markets())
+            ret = self.to_array(self.load_markets())
         return ret
 
     def common_currency_code(self, currency):
@@ -175,24 +215,28 @@ class CrixClient(object):
     def fetch_order_book(self, symbol, limit=10, params={}):
         """
         Orderbook as a dict
-        TODO: skipping because seems to not work
         """
+        ret = {}
         req_symbol = self.ccxt_to_crix_symbol(symbol)
 
-        req = self.client.fetch_order_book(req_symbol, limit)
+        req = self.client.fetch_order_book(req_symbol)#, level_aggregation=1)
+        req_asks = req.asks
+        req_bids = req.bids
 
-        print(req, type(req))
-        # params = {
-        #     'symbolName': req_symbol
-        # }
-        # if limit is not None:
-        #     params['levelAggregation'] = limit
-        # req2 = requests.post(self._base_url + '/depths', json={
-        #     'req': params
-        # })
-        # print(req2)
-        # response = req2.json()
-        # print(type(response), response)
+        asks, bids  = [], []
+        for item in req_asks:
+            asks.append([float(item.price), float(item.quantity)])
+        for item in req_bids:
+            bids.append([float(item.price), float(item.quantity)])
+
+        ts = datetime.now().timestamp() * 1000
+        dt = self.ts_to_iso8601(ts)
+
+        ret['bids'] = bids
+        ret['asks'] = asks
+        ret['timestamp'] = ts
+        ret['datetime'] = dt
+        return ret
 
     def fetch_tickers(self):
         """
@@ -249,6 +293,23 @@ class CrixClient(object):
                 break
         return ret
 
+    def common_currency_code(self, currency):
+        if not self.substituteCommonCurrencyCodes:
+            return currency
+        
+        if (
+                currency is not None
+            and (currency in self.commonCurrencies)
+            and self.commonCurrencies[currency] is not None
+        ):
+            return str(self.commonCurrencies[currency])
+        else:
+            return currency
+
+    #TODO implement amount_to_precision
+    def amount_to_precision(self, symbol, amount):
+        #return self.decimal_to_precision(amount, TRUNCATE, self.markets[symbol]['precision']['amount'], self.precisionMode)
+        pass
 
     ############# Authenticated methods
     def fetch_balance(self):
@@ -284,15 +345,7 @@ class CrixClient(object):
 
         return ret
 
-    def create_order(
-            self, 
-            symbol, 
-            type, 
-            side, 
-            amount, 
-            price=None, 
-            params={}
-        ):
+    def create_order(self, symbol, type, side, amount, price=None, params={}):
         """
         symbol: str
         price: Decimal
@@ -325,59 +378,220 @@ class CrixClient(object):
         )
 
         resp = self.auth_client.create_order(order)
-        
         ret = {
             'id': str(resp.id),
             'info': resp
         }
+        self.orders[ret['id']] = ret
         return ret
 
-    def fetch_open_orders(self, symbol=None, since=None, limit=int(10), params={}):
+    def cancel_order(self, order_id, symbol, params={}):
+        """
+        Cancel placed order
+        """
+        canceled_order = None
+        if isinstance(order_id, str):
+            try:
+                order_id = int(order_id)
+            except ValueError:
+                print(
+                    "Exch[%s] cancel_order() got string order_id=%s. "
+                    "Can't convert to int."
+                    % (self.name, order_id)
+                )
+        req_symbol = self.ccxt_to_crix_symbol(symbol)
+        req = self.auth_client.cancel_order(order_id, req_symbol)
+        canceled_order = self.parse_order(req)
+        if canceled_order['id'] in self.orders:
+            del self.orders[canceled_order['id']]
+        return canceled_order
+
+    def fetch_open_orders(self, symbol=None, since=None, limit=int(1000), params={}):
         """
         Get all open orders for the user.
         One request per each symbol will be made plus additional
         request to query all supported symbols if symbols parameter
         not specified.
         """
+        #TODO implement since
         orders = []
         symbols = symbol
         if isinstance(symbol, str):
             symbol = self.ccxt_to_crix_symbol(symbol)
             symbols = [symbol]
         if symbol is None:
-            symbols = []
-        print(symbols)
-        
-        # resp = self.auth_client.fetch_open_orders(symbols, limit)
-        # orders = [order for order in resp]
-        # print(orders)
+            ccxt_symbols = self.fetch_markets()
+            symbols = [self.ccxt_to_crix_symbol(symbol) for symbol in ccxt_symbols]
 
-        response = self.signed_request('fetch-my-trades', self._base_url + '/user/trades', {
-            'req': {
-                'limit': limit,
-                'symbolName': symbols
-            }
-        })
-        print(type(response), response)
-
+        resp = self.auth_client.fetch_open_orders(*symbols, limit=limit)
+        req_orders = [order for order in resp]
+        print("fetch_open_orders got %s req_orders" % len(req_orders))
+        for order in req_orders:
+            parsed_order = self.parse_order(order)
+            orders.append(parsed_order)
+            if parsed_order['id'] not in self.orders:
+                self.orders[parsed_order['id']] = parsed_order
         return orders
 
+    def fetch_closed_orders(self, symbol=None, since=None, limit=int(1000), params={}):
+        """
+        Get complete (filled, canceled) orders for user
+        One request per each symbol will be made plus additional
+        request to query all supported symbols if symbols parameter
+        not specified.
+        """
+        #TODO doesnt seem to work, always returns empty
+        #TODO implement since
+        orders = []
+        symbols = symbol
+        if isinstance(symbol, str):
+            symbol = self.ccxt_to_crix_symbol(symbol)
+            symbols = [symbol]
+        if symbol is None:
+            ccxt_symbols = self.fetch_markets()
+            symbols = [self.ccxt_to_crix_symbol(symbol) for symbol in ccxt_symbols]
 
-    def signed_request(self, operation, url, json_data):
-        payload = json.dumps(json_data).encode()
-        signer = hmac.new(self.secret.encode(), digestmod='SHA256')
-        signer.update(payload)
-        signature = signer.hexdigest()
-        headers = {
-            'X-Api-Signed-Token': self.key + ',' + signature,
+        resp = self.auth_client.fetch_closed_orders(*symbols, limit=limit)
+        req_orders = [order for order in resp]
+        print("fetch_closed_orders got %s req_orders" % len(req_orders))
+        for order in req_orders:
+            parsed_order = self.parse_order(order)
+            orders.append(parsed_order)
+        return orders
+
+    def fetch_order(self, order_id, symbol=None):
+        """
+        Fetch single open order info
+        """
+        if isinstance(order_id, str):
+            try:
+                order_id = int(order_id)
+            except ValueError:
+                print(
+                    "Exch[%s] cancel_order() got string order_id=%s. "
+                    "Can't convert to int."
+                    % (self.name, order_id)
+                )
+        req_symbol = self.ccxt_to_crix_symbol(symbol)
+        req = self.auth_client.fetch_order(order_id, req_symbol)
+        return self.parse_order(req)
+
+    def fetch_orders(self, symbol=None, since=None, limit=int(1000), params={}):
+        """
+        Get opened and closed orders filtered by symbols. If no symbols specified - all symbols are used.
+        Basically the function acts as union of fetch_open_orders and fetch_closed_orders.
+        """
+        #TODO implement since
+        orders = []
+        symbols = symbol
+        if isinstance(symbol, str):
+            symbol = self.ccxt_to_crix_symbol(symbol)
+            symbols = [symbol]
+        if symbol is None:
+            ccxt_symbols = self.fetch_markets()
+            symbols = [self.ccxt_to_crix_symbol(symbol) for symbol in ccxt_symbols]
+
+        resp = self.auth_client.fetch_orders(*symbols, limit=limit)
+        req_orders = [order for order in resp]
+        print("fetch_orders() got %s req_orders" % len(req_orders))
+        for order in req_orders:
+            parsed_order = self.parse_order(order)
+            orders.append(parsed_order)
+        return orders
+
+    def fetch_my_trades(self, symbol=None, since=None, limit=int(1000), params={}):
+        """
+        Get all trades for the user. There is some gap (a few ms)
+        between time when trade is actually created and time
+        when it becomes visible for the user.
+        """
+        # TODO not sure what happens here, it appears that we're getting orders, not actual filled trades
+        #TODO implement since
+        trades = []
+        symbols = symbol
+        if isinstance(symbol, str):
+            symbol = self.ccxt_to_crix_symbol(symbol)
+            symbols = [symbol]
+        if symbol is None:
+            ccxt_symbols = self.fetch_markets()
+            symbols = [self.ccxt_to_crix_symbol(symbol) for symbol in ccxt_symbols]
+
+        resp = self.auth_client.fetch_my_trades(*symbols, limit=limit)
+        req_trades = [order for order in resp]
+        print("fetch_my_trades got %s req_trades" % len(req_trades))
+        for trade in req_trades:
+            trade_id = str(trade.id)
+            ts = trade.created_at.timestamp() * 1000
+            dt = self.ts_to_iso8601(ts)
+            symbol = self.crix_to_ccxt_symbol(trade.symbol_name)
+            side = 'buy' if trade.is_buy else 'sell'
+            price = float(trade.price)
+            amount = float(trade.quantity)
+            cost = 0
+            if side == 'buy':
+                if trade.is_buy_order_filled:
+                    cost = amount * price
+            if side == 'sell':
+                if trade.is_sell_order_filled:
+                    cost = amount * price
+
+            ret = {
+                'info': trade,
+                'id': trade_id,
+                'timestamp': ts,
+                'datetime': dt,
+                'symbol': symbol,
+                'order': trade_id,
+                'type': 'limit',
+                'side': side,
+                'takerOrMaker': None,
+                'price': price,
+                'amount': amount,
+                'cost': cost,
+                'fee': {}
+            }
+            trades.append(ret)
+        return trades
+
+    def parse_order(self, order):
+        ord_id = str(order.id)
+        status = order.status
+        if status.value == 0:
+            ord_status = 'open'
+        elif status.value == 1:
+            ord_status = 'closed'
+        elif status.value == 2:
+            ord_status = 'canceled'
+        symbol = self.crix_to_ccxt_symbol(order.symbol_name)
+        side = 'buy' if order.is_buy else 'sell'
+        price = float(order.price)
+        amount = float(order.quantity)
+        filled = float(order.filled_quantity)
+        remaining = amount - filled
+        cost = filled * price
+
+        ret = {
+            'id'                : ord_id,
+            'datetime'          : None,
+            'timestamp'         : None,
+            'lastTradeTimestamp': None,
+            'status'            : ord_status,
+            'symbol'            : symbol,
+            'type'              : 'limit',
+            'side'              : side,
+            'price'             : price,
+            'amount'            : amount,
+            'filled'            : filled,
+            'remaining'         : remaining,
+            'trades'            : [],
+            'fee'               : {},
+            'info'              : order
         }
-        req = requests.post(url, data=payload, headers=headers)
-        #APIError.ensure(operation, req)
-        return req.json()
+        return ret
 
     @staticmethod
     def to_array(value):
-        return list(value.values()) if type(value) is dict else value
+        return list(value.keys()) if type(value) is dict else value
 
     @staticmethod
     def ccxt_to_crix_symbol(symbol):
@@ -386,3 +600,50 @@ class CrixClient(object):
     @staticmethod
     def crix_to_ccxt_symbol(symbol):
         return symbol.replace('_', '/')
+
+    @staticmethod
+    def ts_to_iso8601(timestamp):
+        now = datetime.fromtimestamp(timestamp // 1000)
+        return now.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-6] + "{:03d}".format(int(timestamp) % 1000) + 'Z'
+
+
+def test_print(method, msg):
+    print(10*'#', ' START ', method, ' ', 10*'#')
+    print(msg)
+    print(10*'#', ' END ', method, ' ', 10*'#')
+    print('\n')
+
+key = ""
+secret = ""
+password = "test"
+symbol = 'ETH/BTC'
+ord_type = 'limit'
+side = 'sell'
+amount = 0.1
+price = 0.1
+
+
+crix_client = CrixClient(key, secret, password)
+markets = crix_client.load_markets()
+test_print('load_markets()', markets)
+
+fetched_markets = crix_client.fetch_markets()
+test_print('fetch_markets()', fetched_markets)
+
+fetched_tickers = crix_client.fetch_tickers()
+test_print('fetch_tickers()', fetched_tickers)
+
+bal = crix_client.fetch_balance()
+test_print('fetch_balance()', bal)
+
+closed_orders = crix_client.fetch_closed_orders()
+test_print('fetch_closed_orders()', closed_orders)
+
+open_orders = crix_client.fetch_open_orders()
+test_print('fetch_open_orders()', open_orders)
+
+orders = crix_client.fetch_orders()
+test_print('fetch_orders()', orders)
+
+my_trades = crix_client.fetch_my_trades()
+test_print('fetch_my_trades()', my_trades)
