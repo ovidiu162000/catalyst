@@ -22,8 +22,6 @@ class CrixClient(object):
     - 'prod' - mainnet, production environment with real currency
     """
     env = 'mvp'
-    enableRateLimit = False
-    rateLimit = 2000  # milliseconds = seconds * 1000
 
     def __init__(self, api_key, api_secret, password):
         if self.env == 'prod':
@@ -36,6 +34,11 @@ class CrixClient(object):
         self.key = api_key
         self.secret = api_secret
         self.auth_client = crix.AuthorizedClient(api_key, api_secret)
+        
+        # Currently for BOT API there is a rate limit about 100 requests/second
+        self.enableRateLimit = False
+        self.lastRestRequestTimestamp = 0
+        self.rateLimit = 100
 
         #self.precisionMode = DECIMAL_PLACES
         self.substituteCommonCurrencyCodes = True
@@ -107,7 +110,10 @@ class CrixClient(object):
         https://github.com/ccxt/ccxt/wiki/Manual#market-structure
         """
         markets = {}
+        if self.enableRateLimit:
+            self.throttle()
         req = self.client.fetch_markets()
+        self.lastRestRequestTimestamp = datetime.now().timestamp()
 
         for item in req:
             id = item.name
@@ -169,8 +175,7 @@ class CrixClient(object):
         valid_limits = [1, 5, 10, 20, 50, 100, 500, 1000]
         if not self.markets:
             self.load_markets()
-        
-        ##### Validate parameters sent to crix_client #####
+
         req_symbol = self.ccxt_to_crix_symbol(symbol)
         req_timeframe = self.timeframes[timeframe]
         if limit not in valid_limits:
@@ -197,7 +202,10 @@ class CrixClient(object):
         # utc_end_time is not specified but will always be the current time
         utc_end_time = datetime.now()
 
+        if self.enableRateLimit:
+            self.throttle()
         req = self.client.fetch_ohlcv(req_symbol, since, utc_end_time, req_timeframe, limit)
+        self.lastRestRequestTimestamp = datetime.now().timestamp()
 
         for item in req:
             ts = item.open_time#.timestamp()
@@ -219,7 +227,10 @@ class CrixClient(object):
         ret = {}
         req_symbol = self.ccxt_to_crix_symbol(symbol)
 
+        if self.enableRateLimit:
+            self.throttle()
         req = self.client.fetch_order_book(req_symbol)#, level_aggregation=1)
+        self.lastRestRequestTimestamp = datetime.now().timestamp()
         req_asks = req.asks
         req_bids = req.bids
 
@@ -243,7 +254,12 @@ class CrixClient(object):
         Get tickers for all symbols for the last 24 hours
         """
         tickers = []
+
+        if self.enableRateLimit:
+            self.throttle()
         req = self.client.fetch_ticker()
+        self.lastRestRequestTimestamp = datetime.now().timestamp()
+
         for item in req:
             symbol      = self.crix_to_ccxt_symbol(item.symbol_name)
             dt          = item.open_time
@@ -317,7 +333,11 @@ class CrixClient(object):
         Balance as a dict
         """
         ret = {}
+
+        if self.enableRateLimit:
+            self.throttle()
         resp = self.auth_client.fetch_balance()
+        self.lastRestRequestTimestamp = datetime.now().timestamp()
 
         bal_free = {}
         bal_used = {}
@@ -377,7 +397,11 @@ class CrixClient(object):
             expire_time=expire_time
         )
 
+        if self.enableRateLimit:
+            self.throttle()
         resp = self.auth_client.create_order(order)
+        self.lastRestRequestTimestamp = datetime.now().timestamp()
+        
         ret = {
             'id': str(resp.id),
             'info': resp
@@ -400,7 +424,12 @@ class CrixClient(object):
                     % (self.name, order_id)
                 )
         req_symbol = self.ccxt_to_crix_symbol(symbol)
+
+        if self.enableRateLimit:
+            self.throttle()
         req = self.auth_client.cancel_order(order_id, req_symbol)
+        self.lastRestRequestTimestamp = datetime.now().timestamp()
+
         canceled_order = self.parse_order(req)
         if canceled_order['id'] in self.orders:
             del self.orders[canceled_order['id']]
@@ -423,7 +452,11 @@ class CrixClient(object):
             ccxt_symbols = self.fetch_markets()
             symbols = [self.ccxt_to_crix_symbol(symbol) for symbol in ccxt_symbols]
 
+        if self.enableRateLimit:
+            self.throttle()
         resp = self.auth_client.fetch_open_orders(*symbols, limit=limit)
+        self.lastRestRequestTimestamp = datetime.now().timestamp()
+        
         req_orders = [order for order in resp]
         print("fetch_open_orders got %s req_orders" % len(req_orders))
         for order in req_orders:
@@ -451,7 +484,11 @@ class CrixClient(object):
             ccxt_symbols = self.fetch_markets()
             symbols = [self.ccxt_to_crix_symbol(symbol) for symbol in ccxt_symbols]
 
+        if self.enableRateLimit:
+            self.throttle()
         resp = self.auth_client.fetch_closed_orders(*symbols, limit=limit)
+        self.lastRestRequestTimestamp = datetime.now().timestamp()
+
         req_orders = [order for order in resp]
         print("fetch_closed_orders got %s req_orders" % len(req_orders))
         for order in req_orders:
@@ -473,7 +510,11 @@ class CrixClient(object):
                     % (self.name, order_id)
                 )
         req_symbol = self.ccxt_to_crix_symbol(symbol)
+
+        if self.enableRateLimit:
+            self.throttle()
         req = self.auth_client.fetch_order(order_id, req_symbol)
+        self.lastRestRequestTimestamp = datetime.now().timestamp()
         return self.parse_order(req)
 
     def fetch_orders(self, symbol=None, since=None, limit=int(1000), params={}):
@@ -491,7 +532,11 @@ class CrixClient(object):
             ccxt_symbols = self.fetch_markets()
             symbols = [self.ccxt_to_crix_symbol(symbol) for symbol in ccxt_symbols]
 
+        if self.enableRateLimit:
+            self.throttle()
         resp = self.auth_client.fetch_orders(*symbols, limit=limit)
+        self.lastRestRequestTimestamp = datetime.now().timestamp()
+
         req_orders = [order for order in resp]
         print("fetch_orders() got %s req_orders" % len(req_orders))
         for order in req_orders:
@@ -516,7 +561,11 @@ class CrixClient(object):
             ccxt_symbols = self.fetch_markets()
             symbols = [self.ccxt_to_crix_symbol(symbol) for symbol in ccxt_symbols]
 
+        if self.enableRateLimit:
+            self.throttle()
         resp = self.auth_client.fetch_my_trades(*symbols, limit=limit)
+        self.lastRestRequestTimestamp = datetime.now().timestamp()
+
         req_trades = [order for order in resp]
         print("fetch_my_trades got %s req_trades" % len(req_trades))
         for trade in req_trades:
@@ -609,12 +658,22 @@ class CrixClient(object):
 
 def test_print(method, msg):
     print(10*'#', ' START ', method, ' ', 10*'#')
-    print(msg)
+    if isinstance(msg, list):
+        for info in msg:
+            if isinstance(info, dict):
+                for key, val in info.items():
+                    #if key != 'info':
+                    print(key, val)
+                print('\n')
+            else:
+                print(info)
+    else:
+        print(msg)
     print(10*'#', ' END ', method, ' ', 10*'#')
     print('\n')
 
-key = ""
-secret = ""
+key = "7j4yrba1wpjppi0srjyobze6zw12q54fqft9yp9e04p7euuqv42pinknrkz5yhar"
+secret = "b3f4sfrth6zrslidwk6svti9bp336me9qry4brncqfw5bmuvebdgxl9osjmwrk09"
 password = "test"
 symbol = 'ETH/BTC'
 ord_type = 'limit'
