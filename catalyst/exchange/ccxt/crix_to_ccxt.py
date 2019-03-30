@@ -1,15 +1,17 @@
+from decimal import Decimal
+from datetime import datetime, timedelta
 import hmac
 import json
-from datetime import datetime
-from decimal import Decimal
+import re
+import time
 
+#from catalyst.constants import LOG_LEVEL
 import ccxt
-# from ccxt.base.decimal_to_precision import decimal_to_precision
-# from ccxt.base.decimal_to_precision import DECIMAL_PLACES, TRUNCATE, ROUND
+from ccxt.base.decimal_to_precision import decimal_to_precision
+from ccxt.base.decimal_to_precision import DECIMAL_PLACES, TRUNCATE, ROUND
 import crix
 from crix.models import Resolution, NewOrder
 from logbook import Logger
-#from catalyst.constants import LOG_LEVEL
 import requests
 
 #log = Logger('crix', level=LOG_LEVEL)
@@ -21,9 +23,9 @@ class CrixClient(object):
     - 'mvp' - testnet sandbox with full-wipe each 2nd week (usually)
     - 'prod' - mainnet, production environment with real currency
     """
-    env = 'mvp'
 
-    def __init__(self, api_key, api_secret, password):
+    def __init__(self, api_key, api_secret, password, env='mvp'):
+        self.env = env
         if self.env == 'prod':
             self._base_url = 'https://crix.io'
         else:
@@ -34,13 +36,13 @@ class CrixClient(object):
         self.key = api_key
         self.secret = api_secret
         self.auth_client = crix.AuthorizedClient(api_key, api_secret)
-        
-        # Currently for BOT API there is a rate limit about 100 requests/second
-        self.enableRateLimit = False
-        self.lastRestRequestTimestamp = 0
-        self.rateLimit = 100
 
-        #self.precisionMode = DECIMAL_PLACES
+        # Currently for BOT API there is a rate limit about 100 requests/second
+        self.enableRateLimit = True
+        self.lastRestRequestTimestamp = 0
+        self.rateLimit = 1000
+
+        self.precisionMode = DECIMAL_PLACES
         self.substituteCommonCurrencyCodes = True
         self.commonCurrencies = {
             'XBT'   : 'BTC',
@@ -123,7 +125,9 @@ class CrixClient(object):
             active = item.is_trading
             precision = {
                 'base': int(item.base_precision),
-                'quote': int(item.quote_precision)
+                'quote': int(item.quote_precision),
+                'amount': self.precision_from_string(str(float(item.tick_lot))),
+                'price': self.precision_from_string(str(float(item.tick_price)))
             }
             limits = {
                 'amount': {
@@ -187,20 +191,20 @@ class CrixClient(object):
             return ret
 
         # utc_start_time is actually 'since' arg and has to be datetime obj
+        # utc_end_time is not specified but will always be the current time
         if since is None:
-            since = datetime(1980, 1, 1, 6, 0, 0)
+            since, utc_end_time = self.generate_ohlcv_start_time(timeframe, since, limit)
         elif isinstance(since, (int, float)):
             try:
                 since = datetime.fromtimestamp(since)
+            except OSError as err:
+                since = datetime.fromtimestamp(since/1000)
             except OSError as err:
                 print(
                     "fetch_ohlcv() got arg since=%s which cannot be "
                     "converted to datetime object" % since
                 )
                 return
-        
-        # utc_end_time is not specified but will always be the current time
-        utc_end_time = datetime.now()
 
         if self.enableRateLimit:
             self.throttle()
@@ -208,7 +212,7 @@ class CrixClient(object):
         self.lastRestRequestTimestamp = datetime.now().timestamp()
 
         for item in req:
-            ts = item.open_time#.timestamp()
+            ts = item.open_time.timestamp() * 1000
             open_price = float(item.open)
             high = float(item.high)
             low = float(item.low)
@@ -269,7 +273,7 @@ class CrixClient(object):
             low         = float(item.low)
             close       = float(item.close)
             last        = close
-            volume      = float(item.volume)        #TODO figure out if this is the baseVolume or quoteVolume
+            volume      = float(item.volume)
             prev_close  = float(item.prev_close_price)
             change      = float(item.price_change)
             percentage  = float(item.price_change_percent)
@@ -322,10 +326,9 @@ class CrixClient(object):
         else:
             return currency
 
-    #TODO implement amount_to_precision
     def amount_to_precision(self, symbol, amount):
-        #return self.decimal_to_precision(amount, TRUNCATE, self.markets[symbol]['precision']['amount'], self.precisionMode)
-        pass
+        return decimal_to_precision(amount, TRUNCATE, self.markets[symbol]['precision']['amount'], self.precisionMode)
+
 
     ############# Authenticated methods
     def fetch_balance(self):
@@ -401,7 +404,7 @@ class CrixClient(object):
             self.throttle()
         resp = self.auth_client.create_order(order)
         self.lastRestRequestTimestamp = datetime.now().timestamp()
-        
+
         ret = {
             'id': str(resp.id),
             'info': resp
@@ -442,7 +445,6 @@ class CrixClient(object):
         request to query all supported symbols if symbols parameter
         not specified.
         """
-        #TODO implement since
         orders = []
         symbols = symbol
         if isinstance(symbol, str):
@@ -458,12 +460,13 @@ class CrixClient(object):
         self.lastRestRequestTimestamp = datetime.now().timestamp()
         
         req_orders = [order for order in resp]
-        print("fetch_open_orders got %s req_orders" % len(req_orders))
         for order in req_orders:
             parsed_order = self.parse_order(order)
             orders.append(parsed_order)
             if parsed_order['id'] not in self.orders:
                 self.orders[parsed_order['id']] = parsed_order
+        if since is not None:
+            orders = self.filter_array_by_since(orders, since)
         return orders
 
     def fetch_closed_orders(self, symbol=None, since=None, limit=int(1000), params={}):
@@ -473,8 +476,6 @@ class CrixClient(object):
         request to query all supported symbols if symbols parameter
         not specified.
         """
-        #TODO doesnt seem to work, always returns empty
-        #TODO implement since
         orders = []
         symbols = symbol
         if isinstance(symbol, str):
@@ -490,10 +491,11 @@ class CrixClient(object):
         self.lastRestRequestTimestamp = datetime.now().timestamp()
 
         req_orders = [order for order in resp]
-        print("fetch_closed_orders got %s req_orders" % len(req_orders))
         for order in req_orders:
             parsed_order = self.parse_order(order)
             orders.append(parsed_order)
+        if since is not None:
+            orders = self.filter_array_by_since(orders, since)
         return orders
 
     def fetch_order(self, order_id, symbol=None):
@@ -522,7 +524,6 @@ class CrixClient(object):
         Get opened and closed orders filtered by symbols. If no symbols specified - all symbols are used.
         Basically the function acts as union of fetch_open_orders and fetch_closed_orders.
         """
-        #TODO implement since
         orders = []
         symbols = symbol
         if isinstance(symbol, str):
@@ -538,10 +539,13 @@ class CrixClient(object):
         self.lastRestRequestTimestamp = datetime.now().timestamp()
 
         req_orders = [order for order in resp]
-        print("fetch_orders() got %s req_orders" % len(req_orders))
+
         for order in req_orders:
             parsed_order = self.parse_order(order)
             orders.append(parsed_order)
+
+        if since is not None:
+            orders = self.filter_array_by_since(orders, since)
         return orders
 
     def fetch_my_trades(self, symbol=None, since=None, limit=int(1000), params={}):
@@ -550,8 +554,6 @@ class CrixClient(object):
         between time when trade is actually created and time
         when it becomes visible for the user.
         """
-        # TODO not sure what happens here, it appears that we're getting orders, not actual filled trades
-        #TODO implement since
         trades = []
         symbols = symbol
         if isinstance(symbol, str):
@@ -567,7 +569,6 @@ class CrixClient(object):
         self.lastRestRequestTimestamp = datetime.now().timestamp()
 
         req_trades = [order for order in resp]
-        print("fetch_my_trades got %s req_trades" % len(req_trades))
         for trade in req_trades:
             trade_id = str(trade.id)
             ts = trade.created_at.timestamp() * 1000
@@ -600,8 +601,13 @@ class CrixClient(object):
                 'fee': {}
             }
             trades.append(ret)
+
+        if since is not None:
+            trades = self.filter_array_by_since(trades, since)
         return trades
 
+
+    ############# Helper methods
     def parse_order(self, order):
         ord_id = str(order.id)
         status = order.status
@@ -639,6 +645,56 @@ class CrixClient(object):
         return ret
 
     @staticmethod
+    def filter_array_by_since(array, since):
+        ret = []
+        for item in array:
+            timestamp = item.get('timestamp', None)
+            if timestamp:
+                if timestamp >= since:
+                    ret.append(item)
+            else:
+                ret.append(item)
+        return ret
+
+    def generate_ohlcv_start_time(self, timeframe, since, limit):
+        """
+        crix requires to input an utc_start_time when requesting OHLCV
+        this start_time can't be fixed, because it depends in timeframe
+        returns start_time = current time - (timeframe * limit)
+        return is datetime object
+        """
+        start_time = 0
+        if timeframe == '1m':
+            total_minutes = limit
+        elif timeframe == '5m':
+            total_minutes = limit * 5
+        elif timeframe == '15m':
+            total_minutes = limit * 15
+        elif timeframe == '30m':
+            total_minutes = limit * 30
+        elif timeframe == '1h':
+            total_minutes = limit * 60
+        elif timeframe == '2h':
+            total_minutes = limit * 60 * 2
+        elif timeframe == '4h':
+            total_minutes = limit * 60 * 4
+        elif timeframe == '1d':
+            total_minutes = limit * 60 * 24
+
+        days, hours, minutes = self.get_min_hr_day(total_minutes)
+        delta_to_sustract = timedelta(days=days, hours=hours, minutes=minutes)
+        now = datetime.now()
+        start_time = now - delta_to_sustract
+        return start_time, now
+
+    @staticmethod
+    def get_min_hr_day(total_time):
+        hours = total_time // 60
+        days = hours // 24
+        minutes = total_time % 60
+        return days, hours, minutes
+
+    @staticmethod
     def to_array(value):
         return list(value.keys()) if type(value) is dict else value
 
@@ -655,54 +711,7 @@ class CrixClient(object):
         now = datetime.fromtimestamp(timestamp // 1000)
         return now.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-6] + "{:03d}".format(int(timestamp) % 1000) + 'Z'
 
-
-def test_print(method, msg):
-    print(10*'#', ' START ', method, ' ', 10*'#')
-    if isinstance(msg, list):
-        for info in msg:
-            if isinstance(info, dict):
-                for key, val in info.items():
-                    #if key != 'info':
-                    print(key, val)
-                print('\n')
-            else:
-                print(info)
-    else:
-        print(msg)
-    print(10*'#', ' END ', method, ' ', 10*'#')
-    print('\n')
-
-key = "7j4yrba1wpjppi0srjyobze6zw12q54fqft9yp9e04p7euuqv42pinknrkz5yhar"
-secret = "b3f4sfrth6zrslidwk6svti9bp336me9qry4brncqfw5bmuvebdgxl9osjmwrk09"
-password = "test"
-symbol = 'ETH/BTC'
-ord_type = 'limit'
-side = 'sell'
-amount = 0.1
-price = 0.1
-
-
-crix_client = CrixClient(key, secret, password)
-markets = crix_client.load_markets()
-test_print('load_markets()', markets)
-
-fetched_markets = crix_client.fetch_markets()
-test_print('fetch_markets()', fetched_markets)
-
-fetched_tickers = crix_client.fetch_tickers()
-test_print('fetch_tickers()', fetched_tickers)
-
-bal = crix_client.fetch_balance()
-test_print('fetch_balance()', bal)
-
-closed_orders = crix_client.fetch_closed_orders()
-test_print('fetch_closed_orders()', closed_orders)
-
-open_orders = crix_client.fetch_open_orders()
-test_print('fetch_open_orders()', open_orders)
-
-orders = crix_client.fetch_orders()
-test_print('fetch_orders()', orders)
-
-my_trades = crix_client.fetch_my_trades()
-test_print('fetch_my_trades()', my_trades)
+    @staticmethod
+    def precision_from_string(string):
+        parts = re.sub(r'0+$', '', string).split('.')
+        return len(parts[1]) if len(parts) > 1 else 0
