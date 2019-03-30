@@ -40,7 +40,7 @@ class CrixClient(object):
         # Currently for BOT API there is a rate limit about 100 requests/second
         self.enableRateLimit = True
         self.lastRestRequestTimestamp = 0
-        self.rateLimit = 1000
+        self.rateLimit = 100
 
         self.precisionMode = DECIMAL_PLACES
         self.substituteCommonCurrencyCodes = True
