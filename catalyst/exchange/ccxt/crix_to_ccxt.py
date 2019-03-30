@@ -192,8 +192,9 @@ class CrixClient(object):
 
         # utc_start_time is actually 'since' arg and has to be datetime obj
         # utc_end_time is not specified but will always be the current time
+        utc_end_time = datetime.now()
         if since is None:
-            since, utc_end_time = self.generate_ohlcv_start_time(timeframe, since, limit)
+            since = self.generate_ohlcv_start_time(utc_end_time, timeframe, since, limit)
         elif isinstance(since, (int, float)):
             try:
                 since = datetime.fromtimestamp(since)
@@ -204,7 +205,7 @@ class CrixClient(object):
                     "fetch_ohlcv() got arg since=%s which cannot be "
                     "converted to datetime object" % since
                 )
-                return
+                return ret
 
         if self.enableRateLimit:
             self.throttle()
@@ -656,7 +657,7 @@ class CrixClient(object):
                 ret.append(item)
         return ret
 
-    def generate_ohlcv_start_time(self, timeframe, since, limit):
+    def generate_ohlcv_start_time(self, now, timeframe, since, limit):
         """
         crix requires to input an utc_start_time when requesting OHLCV
         this start_time can't be fixed, because it depends in timeframe
@@ -683,9 +684,8 @@ class CrixClient(object):
 
         days, hours, minutes = self.get_min_hr_day(total_minutes)
         delta_to_sustract = timedelta(days=days, hours=hours, minutes=minutes)
-        now = datetime.now()
-        start_time = now - delta_to_sustract
-        return start_time, now
+
+        return now - delta_to_sustract
 
     @staticmethod
     def get_min_hr_day(total_time):
