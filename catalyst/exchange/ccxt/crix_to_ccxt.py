@@ -10,8 +10,8 @@ import ccxt
 from ccxt.base.decimal_to_precision import decimal_to_precision
 from ccxt.base.decimal_to_precision import DECIMAL_PLACES, TRUNCATE, ROUND
 import crix
-from crix.models import Resolution, NewOrder
-from logbook import Logger
+from crix.models import Resolution, NewOrder, TimeInForce
+#from logbook import Logger
 import requests
 
 #log = Logger('crix', level=LOG_LEVEL)
@@ -23,22 +23,16 @@ class CrixClient(object):
     - 'mvp' - testnet sandbox with full-wipe each 2nd week (usually)
     - 'prod' - mainnet, production environment with real currency
     """
-
-    def __init__(self, api_key, api_secret, password, env='mvp'):
-        self.env = env
-        if self.env == 'prod':
-            self._base_url = 'https://crix.io'
-        else:
-            self._base_url = 'https://{}.crix.io'.format(self.env)
-        self._base_url += '/api/v1'
-        
-        self.client = crix.Client(env='mvp')
-        self.key = api_key
-        self.secret = api_secret
-        self.auth_client = crix.AuthorizedClient(api_key, api_secret)
+    env = 'mvp'
+    def __init__(self, config={}):
+        self.client = crix.Client(env=self.env)
+        self.api_key = config.get("api_key", "")
+        self.api_secret = config.get("api_secret", "")
+        self.password = config.get("password", "")
+        self.auth_client = crix.AuthorizedClient(self.api_key, self.api_secret)
 
         # Currently for BOT API there is a rate limit about 100 requests/second
-        self.enableRateLimit = True
+        self.enableRateLimit = False
         self.lastRestRequestTimestamp = 0
         self.rateLimit = 100
 
@@ -52,7 +46,7 @@ class CrixClient(object):
             'BCHSV' : 'BSV',
         }
 
-        self.name = 'Crix'
+        self.name = 'crix'
         self.markets = None
         self.tickers = None
         self.orders = {}
@@ -105,12 +99,16 @@ class CrixClient(object):
             delay = self.rateLimit - elapsed
             time.sleep(delay / 1000.0)
 
-    def load_markets(self):
+    def load_markets(self, reload=False, params={}):
         """
         Get dict of all symbols on the exchange.
         CCXT market structure:
         https://github.com/ccxt/ccxt/wiki/Manual#market-structure
         """
+        if not reload:
+            if self.markets:
+                return self.markets
+
         markets = {}
         if self.enableRateLimit:
             self.throttle()
@@ -157,7 +155,7 @@ class CrixClient(object):
         self.markets = markets
         return markets
 
-    def fetch_markets(self):
+    def fetch_markets(self, params={}):
         """
         Returns all the markets on exchange in list format
         """
@@ -175,13 +173,13 @@ class CrixClient(object):
         """
         Simulates the CCXT response for fetch_ohlcv
         """
+        self.load_markets()
         ret = []
-        valid_limits = [1, 5, 10, 20, 50, 100, 500, 1000]
-        if not self.markets:
-            self.load_markets()
 
         req_symbol = self.ccxt_to_crix_symbol(symbol)
         req_timeframe = self.timeframes[timeframe]
+
+        valid_limits = [1, 5, 10, 20, 50, 100, 500, 1000]
         if limit not in valid_limits:
             print(
                 "Exch[%s] fetch_ohlcv() got unsupported limit[%s]. "
@@ -194,7 +192,7 @@ class CrixClient(object):
         # utc_end_time is not specified but will always be the current time
         utc_end_time = datetime.now()
         if since is None:
-            since = self.generate_ohlcv_start_time(utc_end_time, timeframe, since, limit)
+            since = self.generate_ohlcv_start_time(utc_end_time, timeframe, limit)
         elif isinstance(since, (int, float)):
             try:
                 since = datetime.fromtimestamp(since)
@@ -229,6 +227,7 @@ class CrixClient(object):
         """
         Orderbook as a dict
         """
+        self.load_markets()
         ret = {}
         req_symbol = self.ccxt_to_crix_symbol(symbol)
 
@@ -254,10 +253,11 @@ class CrixClient(object):
         ret['datetime'] = dt
         return ret
 
-    def fetch_tickers(self):
+    def fetch_tickers(self, symbols=None, params={}):
         """
         Get tickers for all symbols for the last 24 hours
         """
+        self.load_markets()
         tickers = []
 
         if self.enableRateLimit:
@@ -267,6 +267,8 @@ class CrixClient(object):
 
         for item in req:
             symbol      = self.crix_to_ccxt_symbol(item.symbol_name)
+            if symbols and symbol not in symbols:
+                continue
             dt          = item.open_time
             timestamp   = dt.timestamp() * 1000
             open_price  = float(item.open)
@@ -304,6 +306,7 @@ class CrixClient(object):
         """
         Get ticker for a specific symbol
         """
+        self.load_markets()
         ret = {}
         if self.tickers is None:
             self.fetch_tickers()
@@ -336,6 +339,7 @@ class CrixClient(object):
         """
         Balance as a dict
         """
+        self.load_markets()
         ret = {}
 
         if self.enableRateLimit:
@@ -369,7 +373,7 @@ class CrixClient(object):
 
         return ret
 
-    def create_order(self, symbol, type, side, amount, price=None, params={}):
+    def create_order(self, symbol, type, side, amount, price, params={}):
         """
         symbol: str
         price: Decimal
@@ -379,6 +383,7 @@ class CrixClient(object):
         stop_price: Optional[Decimal] = None
         expire_time: Optional[datetime] = None
         """
+        self.load_markets()
         req_symbol = self.ccxt_to_crix_symbol(symbol)
         if side.upper() == "BUY":
             is_buy = True
@@ -417,6 +422,7 @@ class CrixClient(object):
         """
         Cancel placed order
         """
+        self.load_markets()
         canceled_order = None
         if isinstance(order_id, str):
             try:
@@ -446,6 +452,7 @@ class CrixClient(object):
         request to query all supported symbols if symbols parameter
         not specified.
         """
+        self.load_markets()
         orders = []
         symbols = symbol
         if isinstance(symbol, str):
@@ -503,6 +510,7 @@ class CrixClient(object):
         """
         Fetch single open order info
         """
+        self.load_markets()
         if isinstance(order_id, str):
             try:
                 order_id = int(order_id)
@@ -525,6 +533,7 @@ class CrixClient(object):
         Get opened and closed orders filtered by symbols. If no symbols specified - all symbols are used.
         Basically the function acts as union of fetch_open_orders and fetch_closed_orders.
         """
+        self.load_markets()
         orders = []
         symbols = symbol
         if isinstance(symbol, str):
@@ -555,6 +564,7 @@ class CrixClient(object):
         between time when trade is actually created and time
         when it becomes visible for the user.
         """
+        self.load_markets()
         trades = []
         symbols = symbol
         if isinstance(symbol, str):
@@ -578,14 +588,10 @@ class CrixClient(object):
             side = 'buy' if trade.is_buy else 'sell'
             price = float(trade.price)
             amount = float(trade.quantity)
-            cost = 0
-            if side == 'buy':
-                if trade.is_buy_order_filled:
-                    cost = amount * price
-            if side == 'sell':
-                if trade.is_sell_order_filled:
-                    cost = amount * price
-
+            if trade.order_filled:
+                cost = amount * price
+            else:
+                cost = 0
             ret = {
                 'info': trade,
                 'id': trade_id,
@@ -611,6 +617,8 @@ class CrixClient(object):
     ############# Helper methods
     def parse_order(self, order):
         ord_id = str(order.id)
+        dt = order.created_at
+        ts = dt.timestamp()
         status = order.status
         if status.value == 0:
             ord_status = 'open'
@@ -628,8 +636,8 @@ class CrixClient(object):
 
         ret = {
             'id'                : ord_id,
-            'datetime'          : None,
-            'timestamp'         : None,
+            'datetime'          : dt,
+            'timestamp'         : ts,
             'lastTradeTimestamp': None,
             'status'            : ord_status,
             'symbol'            : symbol,
@@ -657,7 +665,7 @@ class CrixClient(object):
                 ret.append(item)
         return ret
 
-    def generate_ohlcv_start_time(self, now, timeframe, since, limit):
+    def generate_ohlcv_start_time(self, now, timeframe, limit):
         """
         crix requires to input an utc_start_time when requesting OHLCV
         this start_time can't be fixed, because it depends in timeframe
@@ -715,3 +723,4 @@ class CrixClient(object):
     def precision_from_string(string):
         parts = re.sub(r'0+$', '', string).split('.')
         return len(parts[1]) if len(parts) > 1 else 0
+
