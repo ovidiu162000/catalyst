@@ -30,6 +30,7 @@ from catalyst.exchange.utils.datetime_utils import from_ms_timestamp, \
     get_periods_range
 from catalyst.finance.order import Order, ORDER_STATUS
 from catalyst.finance.transaction import Transaction
+import crix_to_ccxt
 from redo import retry
 
 log = Logger('CCXT', level=LOG_LEVEL)
@@ -58,7 +59,10 @@ class CCXT(Exchange):
         )
         try:
             # Making instantiation as explicit as possible for code tracking.
-            if exchange_name in SUPPORTED_EXCHANGES:
+            if exchange_name == 'crix':
+                exchange_attr = getattr(crix_to_ccxt, 'CrixClient')
+
+            elif exchange_name in SUPPORTED_EXCHANGES:
                 exchange_attr = SUPPORTED_EXCHANGES[exchange_name]
 
             else:

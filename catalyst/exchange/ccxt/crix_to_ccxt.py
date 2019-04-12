@@ -5,16 +5,16 @@ import json
 import re
 import time
 
-#from catalyst.constants import LOG_LEVEL
+from catalyst.constants import LOG_LEVEL
 import ccxt
 from ccxt.base.decimal_to_precision import decimal_to_precision
 from ccxt.base.decimal_to_precision import DECIMAL_PLACES, TRUNCATE, ROUND
 import crix
 from crix.models import Resolution, NewOrder, TimeInForce
-#from logbook import Logger
+from logbook import Logger
 import requests
 
-#log = Logger('crix', level=LOG_LEVEL)
+log = Logger('crix', level=LOG_LEVEL)
 
 class CrixClient(object):
     """
@@ -181,7 +181,7 @@ class CrixClient(object):
 
         valid_limits = [1, 5, 10, 20, 50, 100, 500, 1000]
         if limit not in valid_limits:
-            print(
+            log.warn(
                 "Exch[%s] fetch_ohlcv() got unsupported limit[%s]. "
                 "Valid limits are: %s"
                 % (self.name, limit, valid_limits)
@@ -199,7 +199,7 @@ class CrixClient(object):
             except OSError as err:
                 since = datetime.fromtimestamp(since/1000)
             except OSError as err:
-                print(
+                log.warn(
                     "fetch_ohlcv() got arg since=%s which cannot be "
                     "converted to datetime object" % since
                 )
@@ -428,7 +428,7 @@ class CrixClient(object):
             try:
                 order_id = int(order_id)
             except ValueError:
-                print(
+                log.warn(
                     "Exch[%s] cancel_order() got string order_id=%s. "
                     "Can't convert to int."
                     % (self.name, order_id)
@@ -515,7 +515,7 @@ class CrixClient(object):
             try:
                 order_id = int(order_id)
             except ValueError:
-                print(
+                log.warn(
                     "Exch[%s] cancel_order() got string order_id=%s. "
                     "Can't convert to int."
                     % (self.name, order_id)
